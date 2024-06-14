@@ -267,7 +267,6 @@ impl Swapchain {
         } {
             Ok((idx, false)) => idx,
             Ok((_, true)) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                eprintln!("Resize on acquire: suboptimal or out of date image");
                 frame.destroy(&self.command_pool);
                 return VkResult::Err(vk::Result::ERROR_OUT_OF_DATE_KHR);
             }
@@ -349,7 +348,6 @@ impl Swapchain {
         match unsafe { self.loader.queue_present(*queue, &present_info) } {
             Ok(false) => return Ok(()),
             Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                eprintln!("Resize on present: suboptimal or out of date image");
                 return VkResult::Err(vk::Result::ERROR_OUT_OF_DATE_KHR);
             }
             Err(e) => Err(e),

@@ -4,13 +4,11 @@ use crate::{instance::Instance, surface::Surface};
 
 use anyhow::{Context, Result};
 use ash::{
-    ext::{self},
-    khr, vk,
+    ext, khr,
+    vk::{self, Handle},
 };
 
 pub struct Device {
-    // TODO: remove
-    pub shader_device: ext::shader_object::Device,
     pub physical_device: vk::PhysicalDevice,
     pub memory_properties: vk::PhysicalDeviceMemoryProperties,
     pub queue_family: u32,
@@ -110,7 +108,6 @@ impl Device {
         let dynamic_rendering = khr::dynamic_rendering::Device::new(instance, &device);
 
         Ok(Self {
-            shader_device: shader_object.clone(),
             physical_device: pdevice,
             queue_family,
             memory_properties,
@@ -120,6 +117,76 @@ impl Device {
                 shader_object,
             }),
         })
+    }
+
+    pub fn create_graphics_shader<P: ?Sized + AsRef<std::path::Path>>(
+        &self,
+        compiler: &mut shaderc::Compiler,
+        vs_glsl_path: &P,
+        fs_glsl_path: &P,
+        push_constant_ranges: &[vk::PushConstantRange],
+        descriptor_set_layout: &[vk::DescriptorSetLayout],
+    ) -> Result<(vk::ShaderEXT, vk::ShaderEXT)> {
+        let mut options =
+            shaderc::CompileOptions::new().context("Failed to create shader compiler options")?;
+        options.set_target_env(
+            shaderc::TargetEnv::Vulkan,
+            shaderc::EnvVersion::Vulkan1_3 as u32,
+        );
+        options.set_optimization_level(shaderc::OptimizationLevel::Performance);
+        options.set_generate_debug_info();
+
+        let vert_src = std::fs::read_to_string(vs_glsl_path)?;
+        let vert = compiler.compile_into_spirv(
+            &vert_src,
+            shaderc::ShaderKind::Vertex,
+            &vs_glsl_path.as_ref().to_string_lossy(),
+            "main",
+            Some(&options),
+        )?;
+
+        let frag_src = std::fs::read_to_string(fs_glsl_path)?;
+        let frag = compiler.compile_into_spirv(
+            &frag_src,
+            shaderc::ShaderKind::Fragment,
+            &fs_glsl_path.as_ref().to_string_lossy(),
+            "main",
+            Some(&options),
+        )?;
+
+        let shader_infos = [
+            vk::ShaderCreateInfoEXT::default()
+                .flags(vk::ShaderCreateFlagsEXT::LINK_STAGE)
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .next_stage(vk::ShaderStageFlags::FRAGMENT)
+                .code_type(vk::ShaderCodeTypeEXT::SPIRV)
+                .code(vert.as_binary_u8())
+                .name(c"main")
+                .push_constant_ranges(&push_constant_ranges)
+                .set_layouts(&descriptor_set_layout),
+            vk::ShaderCreateInfoEXT::default()
+                .flags(vk::ShaderCreateFlagsEXT::LINK_STAGE)
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .next_stage(vk::ShaderStageFlags::empty())
+                .code_type(vk::ShaderCodeTypeEXT::SPIRV)
+                .code(frag.as_binary_u8())
+                .name(c"main")
+                .push_constant_ranges(&push_constant_ranges)
+                .set_layouts(&descriptor_set_layout),
+        ];
+        match unsafe { self.ext.shader_object.create_shaders(&shader_infos, None) } {
+            Ok(ret) => Ok((ret[0], ret[1])),
+
+            Err((ret, err)) => {
+                if ret[0].is_null() {
+                    panic!("\n vertex shader failed to compile\n{err}\n")
+                } else if ret[1].is_null() {
+                    panic!("\n fragment shader failed to compile\n{err}\n")
+                } else {
+                    panic!("\n shader compilation failed\n{err}\n")
+                }
+            }
+        }
     }
 }
 
