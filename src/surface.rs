@@ -97,8 +97,8 @@ impl Surface {
     }
 }
 
-// impl Drop for Surface {
-//     fn drop(&mut self) {
-//         unsafe { self.loader.destroy_surface(self.inner, None) };
-//     }
-// }
+impl Drop for Surface {
+    fn drop(&mut self) {
+        unsafe { self.loader.destroy_surface(self.inner, None) };
+    }
+}

@@ -3,14 +3,24 @@ use std::{collections::HashSet, sync::Arc};
 use crate::{instance::Instance, surface::Surface};
 
 use anyhow::{Context, Result};
-use ash::{ext, khr, vk};
+use ash::{
+    ext::{self},
+    khr, vk,
+};
 
 pub struct Device {
+    // TODO: remove
+    pub shader_device: ext::shader_object::Device,
     pub physical_device: vk::PhysicalDevice,
-    pub shader_device: ash::ext::shader_object::Device,
     pub memory_properties: vk::PhysicalDeviceMemoryProperties,
     pub queue_family: u32,
     pub device: Arc<ash::Device>,
+    pub ext: Arc<DeviceExt>,
+}
+
+pub struct DeviceExt {
+    pub dynamic_rendering: khr::dynamic_rendering::Device,
+    pub shader_object: ext::shader_object::Device,
 }
 
 impl std::ops::Deref for Device {
@@ -31,7 +41,7 @@ impl Device {
             khr::depth_stencil_resolve::NAME,
             khr::create_renderpass2::NAME,
             khr::multiview::NAME,
-            khr::maintenance2::NAME,
+            khr::synchronization2::NAME,
         ];
         let required_device_extensions_set = HashSet::from(required_device_extensions);
 
@@ -55,10 +65,10 @@ impl Device {
                 let family_idx = queue_properties
                     .into_iter()
                     .enumerate()
-                    .filter_map(|(family_idx, queue)| {
+                    .filter_map(|(family_idx, properties)| {
                         let family_idx = family_idx as u32;
 
-                        let queue_support = queue
+                        let queue_support = properties
                             .queue_flags
                             .contains(vk::QueueFlags::GRAPHICS | vk::QueueFlags::TRANSFER);
                         let surface_support =
@@ -79,6 +89,8 @@ impl Device {
 
         let required_device_extensions = required_device_extensions.map(|x| x.as_ptr());
 
+        let mut feature_synchronization2 =
+            vk::PhysicalDeviceSynchronization2Features::default().synchronization2(true);
         let mut feature_shader_object =
             vk::PhysicalDeviceShaderObjectFeaturesEXT::default().shader_object(true);
         let mut feature_dynamic_rendering =
@@ -88,23 +100,33 @@ impl Device {
             .enabled_features(&default_features)
             .queue_create_infos(&queue_infos)
             .enabled_extension_names(&required_device_extensions)
+            .push_next(&mut feature_synchronization2)
             .push_next(&mut feature_shader_object)
             .push_next(&mut feature_dynamic_rendering);
         let device = unsafe { instance.instance.create_device(pdevice, &device_info, None) }?;
 
         let memory_properties = unsafe { instance.get_physical_device_memory_properties(pdevice) };
-        let shader_device = ash::ext::shader_object::Device::new(instance, &device);
+        let shader_object = ash::ext::shader_object::Device::new(instance, &device);
+        let dynamic_rendering = khr::dynamic_rendering::Device::new(instance, &device);
 
         Ok(Self {
+            shader_device: shader_object.clone(),
             physical_device: pdevice,
-            shader_device,
             queue_family,
             memory_properties,
             device: Arc::new(device),
+            ext: Arc::new(DeviceExt {
+                dynamic_rendering,
+                shader_object,
+            }),
         })
     }
+}
 
-    pub fn create_shaders<P: ?Sized + AsRef<std::path::Path>>(&self, vs_path: &P, fs_path: &P) {
-        // unsafe { self.shader_device.create_shaders(create_infos, None) };
+impl Drop for Device {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.destroy_device(None);
+        }
     }
 }
