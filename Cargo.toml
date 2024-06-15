@@ -1,5 +1,5 @@
 [package]
-name = "all_again"
+name = "vulkan-bda"
 version = "0.1.0"
 edition = "2021"
 

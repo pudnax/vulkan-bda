@@ -5,6 +5,7 @@ use crate::{instance::Instance, surface::Surface};
 use anyhow::{Context, Result};
 use ash::{
     ext, khr,
+    prelude::VkResult,
     vk::{self, Handle},
 };
 
@@ -40,6 +41,7 @@ impl Device {
             khr::create_renderpass2::NAME,
             khr::multiview::NAME,
             khr::synchronization2::NAME,
+            khr::buffer_device_address::NAME,
         ];
         let required_device_extensions_set = HashSet::from(required_device_extensions);
 
@@ -87,6 +89,8 @@ impl Device {
 
         let required_device_extensions = required_device_extensions.map(|x| x.as_ptr());
 
+        let mut feature_buffer_device_address =
+            vk::PhysicalDeviceBufferDeviceAddressFeatures::default().buffer_device_address(true);
         let mut feature_synchronization2 =
             vk::PhysicalDeviceSynchronization2Features::default().synchronization2(true);
         let mut feature_shader_object =
@@ -98,6 +102,7 @@ impl Device {
             .enabled_features(&default_features)
             .queue_create_infos(&queue_infos)
             .enabled_extension_names(&required_device_extensions)
+            .push_next(&mut feature_buffer_device_address)
             .push_next(&mut feature_synchronization2)
             .push_next(&mut feature_shader_object)
             .push_next(&mut feature_dynamic_rendering);
@@ -116,6 +121,50 @@ impl Device {
                 dynamic_rendering,
                 shader_object,
             }),
+        })
+    }
+
+    pub fn get_buffer_address(&self, buffer: &Buffer) -> u64 {
+        unsafe {
+            self.get_buffer_device_address(
+                &vk::BufferDeviceAddressInfo::default().buffer(buffer.buffer),
+            )
+        }
+    }
+
+    pub fn create_buffer(
+        &self,
+        size: vk::DeviceSize,
+        usage: vk::BufferUsageFlags,
+        memory_prop_flags: vk::MemoryPropertyFlags,
+    ) -> VkResult<Buffer> {
+        let buffer = unsafe {
+            self.device.create_buffer(
+                &vk::BufferCreateInfo::default()
+                    .size(size)
+                    .usage(usage | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS),
+                None,
+            )?
+        };
+        let requirements = unsafe { self.get_buffer_memory_requirements(buffer) };
+        let memory_type_index =
+            find_memory_type_index(&self.memory_properties, &requirements, memory_prop_flags)
+                .unwrap();
+        let mut alloc_flag =
+            vk::MemoryAllocateFlagsInfo::default().flags(vk::MemoryAllocateFlags::DEVICE_ADDRESS);
+        let alloc_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(requirements.size)
+            .memory_type_index(memory_type_index)
+            .push_next(&mut alloc_flag);
+        let memory = unsafe { self.device.allocate_memory(&alloc_info, None) }?;
+        unsafe { self.bind_buffer_memory(buffer, memory, 0) }?;
+        let address = unsafe {
+            self.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer))
+        };
+        Ok(Buffer {
+            buffer,
+            memory,
+            device: self.device.clone(),
         })
     }
 
@@ -194,6 +243,36 @@ impl Drop for Device {
     fn drop(&mut self) {
         unsafe {
             self.device.destroy_device(None);
+        }
+    }
+}
+
+pub fn find_memory_type_index(
+    memory_prop: &vk::PhysicalDeviceMemoryProperties,
+    memory_req: &vk::MemoryRequirements,
+    flags: vk::MemoryPropertyFlags,
+) -> Option<u32> {
+    memory_prop.memory_types[..memory_prop.memory_type_count as _]
+        .iter()
+        .enumerate()
+        .find(|(index, memory_type)| {
+            (1 << index) & memory_req.memory_type_bits != 0
+                && (memory_type.property_flags & flags) == flags
+        })
+        .map(|(index, _memory_type)| index as _)
+}
+
+pub struct Buffer {
+    pub buffer: vk::Buffer,
+    pub memory: vk::DeviceMemory,
+    device: Arc<ash::Device>,
+}
+
+impl Drop for Buffer {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.destroy_buffer(self.buffer, None);
+            self.device.free_memory(self.memory, None);
         }
     }
 }

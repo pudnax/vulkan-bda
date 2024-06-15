@@ -1,3 +1,6 @@
+use core::slice;
+use std::time::Instant;
+
 use anyhow::{Context, Result};
 use ash::{
     khr,
@@ -10,7 +13,12 @@ use winit::{
     window::{Window, WindowAttributes},
 };
 
-use self::{device::Device, instance::Instance, surface::Surface, swapchain::Swapchain};
+use self::{
+    device::{Buffer, Device},
+    instance::Instance,
+    surface::Surface,
+    swapchain::Swapchain,
+};
 
 mod device;
 mod instance;
@@ -20,8 +28,12 @@ mod swapchain;
 struct AppInit {
     vs: vk::ShaderEXT,
     fs: vk::ShaderEXT,
+    pipeline_layout: vk::PipelineLayout,
     window: Window,
     queue: vk::Queue,
+
+    time: Instant,
+    buffer: Buffer,
 
     compiler: shaderc::Compiler,
     swapchain: Swapchain,
@@ -52,16 +64,34 @@ impl AppInit {
         let queue = unsafe { device.get_device_queue(device.queue_family, 0) };
 
         let swapchain_loader = khr::swapchain::Device::new(&instance, &device);
-        let swapchain2 = Swapchain::new(&device, &surface, swapchain_loader)?;
+        let swapchain = Swapchain::new(&device, &surface, swapchain_loader)?;
 
         let mut compiler = shaderc::Compiler::new().context("Failed to create shader compiler")?;
 
+        let push_constant_range = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .size(size_of::<u64>() as _);
+        let pipeline_layout = unsafe {
+            device.create_pipeline_layout(
+                &vk::PipelineLayoutCreateInfo::default()
+                    .push_constant_ranges(slice::from_ref(&push_constant_range)),
+                None,
+            )?
+        };
         let (vs, fs) = device.create_graphics_shader(
             &mut compiler,
             "src/trig.vert.glsl",
             "src/trig.frag.glsl",
+            &[push_constant_range],
             &[],
-            &[],
+        )?;
+
+        let buffer = device.create_buffer(
+            size_of::<[f32; 4]>() as _,
+            vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::TRANSFER_DST
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL | vk::MemoryPropertyFlags::HOST_VISIBLE,
         )?;
 
         Ok(Self {
@@ -70,8 +100,13 @@ impl AppInit {
             window,
             queue,
 
+            time: Instant::now(),
+
+            buffer,
+            pipeline_layout,
+
             compiler,
-            swapchain: swapchain2,
+            swapchain,
             surface,
             device,
             instance,
@@ -105,6 +140,19 @@ impl ApplicationHandler for AppInit {
             WindowEvent::RedrawRequested => {
                 let (vs, fs) = (self.vs, self.fs);
 
+                let size = size_of::<[f32; 4]>();
+                let ptr = unsafe {
+                    self.device
+                        .map_memory(self.buffer.memory, 0, size as _, Default::default())
+                }
+                .expect("Failed to map memory");
+                let slice =
+                    unsafe { std::slice::from_raw_parts_mut(ptr.cast(), size / size_of::<f32>()) };
+                let t = self.time.elapsed().as_secs_f32();
+                let (c, s) = (t.cos(), t.sin());
+                slice.copy_from_slice(&[c, -s, s, c]);
+                unsafe { self.device.unmap_memory(self.buffer.memory) };
+
                 let mut frame = match self.swapchain.acquire_next_image() {
                     Ok(frame) => frame,
                     Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
@@ -118,6 +166,8 @@ impl ApplicationHandler for AppInit {
                     self.swapchain.get_current_image_view(),
                     [0., 0.025, 0.025, 1.0],
                 );
+                let address = self.device.get_buffer_address(&self.buffer);
+                frame.push_constant(self.pipeline_layout, &address);
                 frame.bind_vs_fs(vs, fs);
 
                 frame.draw(3, 0);
@@ -135,6 +185,10 @@ impl ApplicationHandler for AppInit {
     }
 
     fn exiting(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
+        unsafe {
+            self.device
+                .destroy_pipeline_layout(self.pipeline_layout, None)
+        };
         let _ = unsafe { self.device.device_wait_idle() };
     }
 
