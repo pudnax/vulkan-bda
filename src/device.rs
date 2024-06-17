@@ -313,8 +313,8 @@ impl Device {
                 .code_type(vk::ShaderCodeTypeEXT::SPIRV)
                 .code(vert.as_binary_u8())
                 .name(c"main")
-                .push_constant_ranges(&push_constant_ranges)
-                .set_layouts(&descriptor_set_layout),
+                .push_constant_ranges(push_constant_ranges)
+                .set_layouts(descriptor_set_layout),
             vk::ShaderCreateInfoEXT::default()
                 .flags(vk::ShaderCreateFlagsEXT::LINK_STAGE)
                 .stage(vk::ShaderStageFlags::FRAGMENT)
@@ -322,8 +322,8 @@ impl Device {
                 .code_type(vk::ShaderCodeTypeEXT::SPIRV)
                 .code(frag.as_binary_u8())
                 .name(c"main")
-                .push_constant_ranges(&push_constant_ranges)
-                .set_layouts(&descriptor_set_layout),
+                .push_constant_ranges(push_constant_ranges)
+                .set_layouts(descriptor_set_layout),
         ];
         match unsafe { self.ext.shader_object.create_shaders(&shader_infos, None) } {
             Ok(ret) => Ok((ret[0], ret[1])),

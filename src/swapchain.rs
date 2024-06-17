@@ -102,11 +102,12 @@ impl Swapchain {
         let format = info
             .formats
             .iter()
-            .filter_map(|format| match format.format {
-                vk::Format::B8G8R8A8_SRGB | vk::Format::R8G8B8A8_SRGB => Some(format),
-                _ => None,
+            .find(|format| {
+                matches!(
+                    format.format,
+                    vk::Format::B8G8R8A8_SRGB | vk::Format::R8G8B8A8_SRGB
+                )
             })
-            .next()
             .unwrap_or(&info.formats[0]);
         let image_count = 3
             .max(capabilities.min_image_count)
@@ -169,7 +170,7 @@ impl Swapchain {
             frames,
             command_pool,
             current_image: 0,
-            format: format.clone(),
+            format: *format,
             extent,
             inner: swapchain,
             loader: swapchain_loader,
@@ -352,9 +353,9 @@ impl Swapchain {
             .swapchains(slice::from_ref(&self.inner))
             .image_indices(&image_indices);
         match unsafe { self.loader.queue_present(*queue, &present_info) } {
-            Ok(false) => return Ok(()),
+            Ok(false) => Ok(()),
             Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                return VkResult::Err(vk::Result::ERROR_OUT_OF_DATE_KHR);
+                VkResult::Err(vk::Result::ERROR_OUT_OF_DATE_KHR)
             }
             Err(e) => Err(e),
         }
@@ -406,7 +407,7 @@ impl FrameGuard {
         unsafe {
             self.ext
                 .shader_object
-                .cmd_set_viewport_with_count(self.frame.command_buffer, &viewports)
+                .cmd_set_viewport_with_count(self.frame.command_buffer, viewports)
         };
     }
     pub fn set_scissors(&mut self, scissors: &[vk::Rect2D]) {
@@ -414,7 +415,7 @@ impl FrameGuard {
         unsafe {
             self.ext
                 .shader_object
-                .cmd_set_scissor_with_count(self.frame.command_buffer, &scissors)
+                .cmd_set_scissor_with_count(self.frame.command_buffer, scissors)
         };
     }
     pub fn set_polygon_mode(&mut self, mode: vk::PolygonMode) {
@@ -530,11 +531,9 @@ impl FrameGuard {
     pub fn set_color_blend_enable(&mut self, enables: &[u32]) {
         self.dyn_state |= DynamicStateFlags::COLOR_BLEND_ENABLE;
         unsafe {
-            self.ext.shader_object.cmd_set_color_blend_enable(
-                self.frame.command_buffer,
-                0,
-                &enables,
-            )
+            self.ext
+                .shader_object
+                .cmd_set_color_blend_enable(self.frame.command_buffer, 0, enables)
         };
     }
     pub fn set_color_blend_equation(&mut self, equations: &[vk::ColorBlendEquationEXT]) {
@@ -543,7 +542,7 @@ impl FrameGuard {
             self.ext.shader_object.cmd_set_color_blend_equation(
                 self.frame.command_buffer,
                 0,
-                &equations,
+                equations,
             )
         };
     }
@@ -553,7 +552,7 @@ impl FrameGuard {
             self.ext.shader_object.cmd_set_color_write_mask(
                 self.frame.command_buffer,
                 0,
-                &write_masks,
+                write_masks,
             )
         };
     }
@@ -582,7 +581,7 @@ impl FrameGuard {
         if !has(DynamicStateFlags::STENCIL_TEST_ENABLE) { self.set_stencil_test_enable(false); }
         if !has(DynamicStateFlags::RASTERIZER_DISCARD_ENABLE) { self.set_rasterizer_discard_enable(false); }
         if !has(DynamicStateFlags::RASTERIZATION_SAMPLES) { self.set_rasterization_samples(vk::SampleCountFlags::TYPE_1); }
-        if !has(DynamicStateFlags::SAMPLE_MASK) { self.set_sample_mask(vk::SampleCountFlags::TYPE_1, &[vk::SampleMask::max_value()]); }
+        if !has(DynamicStateFlags::SAMPLE_MASK) { self.set_sample_mask(vk::SampleCountFlags::TYPE_1, &[vk::SampleMask::MAX]); }
         if !has(DynamicStateFlags::ALPHA_TO_COVERAGE_ENABLE) { self.set_alpha_to_coverage_enable(false); }
         if !has(DynamicStateFlags::FRONT_FACE) { self.set_front_face(vk::FrontFace::COUNTER_CLOCKWISE); }
         if !has(DynamicStateFlags::CULL_MODE) { self.set_cull_mode(vk::CullModeFlags::NONE); }
@@ -630,7 +629,7 @@ impl FrameGuard {
             .input_rate(vk::VertexInputRate::VERTEX)
             .divisor(1)];
         let attribute: Vec<_> = offsets
-            .into_iter()
+            .iter()
             .enumerate()
             .map(|(i, (off, fmt))| {
                 vk::VertexInputAttributeDescription2EXT::default()

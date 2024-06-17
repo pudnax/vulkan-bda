@@ -46,10 +46,8 @@ struct AppInit {
 impl Drop for AppInit {
     fn drop(&mut self) {
         unsafe {
-            unsafe {
-                self.device
-                    .destroy_pipeline_layout(self.pipeline_layout, None)
-            };
+            self.device
+                .destroy_pipeline_layout(self.pipeline_layout, None);
             self.device.ext.shader_object.destroy_shader(self.vs, None);
             self.device.ext.shader_object.destroy_shader(self.fs, None);
         }

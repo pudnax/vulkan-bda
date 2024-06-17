@@ -32,15 +32,15 @@ impl Surface {
     ) -> Result<Self> {
         let inner = unsafe {
             ash_window::create_surface(
-                &entry,
-                &instance,
+                entry,
+                instance,
                 handle.display_handle()?.as_raw(),
                 handle.window_handle()?.as_raw(),
                 None,
             )?
         };
 
-        let loader = khr::surface::Instance::new(&entry, &instance);
+        let loader = khr::surface::Instance::new(entry, instance);
 
         Ok(Surface { inner, loader })
     }
