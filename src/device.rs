@@ -1,4 +1,4 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{alloc, collections::HashSet, ptr::NonNull, sync::Arc};
 
 use crate::{instance::Instance, surface::Surface};
 
@@ -20,6 +20,8 @@ pub struct Device {
 pub struct DeviceExt {
     pub dynamic_rendering: khr::dynamic_rendering::Device,
     pub shader_object: ext::shader_object::Device,
+    pub host_memory: ext::external_memory_host::Device,
+    min_host_pointer_alignment: u64,
 }
 
 impl std::ops::Deref for Device {
@@ -42,6 +44,7 @@ impl Device {
             khr::multiview::NAME,
             khr::synchronization2::NAME,
             khr::buffer_device_address::NAME,
+            ext::external_memory_host::NAME,
         ];
         let required_device_extensions_set = HashSet::from(required_device_extensions);
 
@@ -109,6 +112,12 @@ impl Device {
         let device = unsafe { instance.instance.create_device(pdevice, &device_info, None) }?;
 
         let memory_properties = unsafe { instance.get_physical_device_memory_properties(pdevice) };
+        let mut host_memory_properties =
+            vk::PhysicalDeviceExternalMemoryHostPropertiesEXT::default();
+        let mut props2 =
+            vk::PhysicalDeviceProperties2::default().push_next(&mut host_memory_properties);
+        unsafe { instance.get_physical_device_properties2(pdevice, &mut props2) };
+        let host_memory = ash::ext::external_memory_host::Device::new(instance, &device);
         let shader_object = ash::ext::shader_object::Device::new(instance, &device);
         let dynamic_rendering = khr::dynamic_rendering::Device::new(instance, &device);
 
@@ -120,8 +129,34 @@ impl Device {
             ext: Arc::new(DeviceExt {
                 dynamic_rendering,
                 shader_object,
+                host_memory,
+                min_host_pointer_alignment: host_memory_properties
+                    .min_imported_host_pointer_alignment,
             }),
         })
+    }
+
+    fn get_host_memory_properties(
+        &self,
+        ptr: *mut u8,
+    ) -> Result<vk::MemoryHostPointerPropertiesEXT> {
+        let mut mem_properties = vk::MemoryHostPointerPropertiesEXT::default();
+        let result = unsafe {
+            (self
+                .ext
+                .host_memory
+                .fp()
+                .get_memory_host_pointer_properties_ext)(
+                self.ext.host_memory.device(),
+                vk::ExternalMemoryHandleTypeFlags::HOST_ALLOCATION_EXT,
+                ptr.cast(),
+                &mut mem_properties as _,
+            )
+        };
+        match result {
+            vk::Result::SUCCESS => Ok(mem_properties),
+            _ => Err(vk::Result::ERROR_VALIDATION_FAILED_EXT.into()),
+        }
     }
 
     pub fn get_buffer_address(&self, buffer: &Buffer) -> u64 {
@@ -147,9 +182,12 @@ impl Device {
             )?
         };
         let requirements = unsafe { self.get_buffer_memory_requirements(buffer) };
-        let memory_type_index =
-            find_memory_type_index(&self.memory_properties, &requirements, memory_prop_flags)
-                .unwrap();
+        let memory_type_index = find_memory_type_index(
+            &self.memory_properties,
+            requirements.memory_type_bits,
+            memory_prop_flags,
+        )
+        .expect("Failed to find suitable memory index for buffer memory");
         let mut alloc_flag =
             vk::MemoryAllocateFlagsInfo::default().flags(vk::MemoryAllocateFlags::DEVICE_ADDRESS);
         let alloc_info = vk::MemoryAllocateInfo::default()
@@ -162,13 +200,77 @@ impl Device {
             self.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer))
         };
         Ok(Buffer {
+            address,
             buffer,
             memory,
             device: self.device.clone(),
         })
     }
 
-    pub fn create_graphics_shader<P: ?Sized + AsRef<std::path::Path>>(
+    pub fn create_host_buffer<T>(&self) -> Result<HostBuffer<T>> {
+        let min_alignment = self.ext.min_host_pointer_alignment;
+        let ptr = unsafe {
+            NonNull::new(alloc::alloc(alloc::Layout::from_size_align(
+                min_alignment as usize,
+                min_alignment as usize,
+            )?))
+            .context("Failed to allocate pointer for host memory")?
+            .as_ptr()
+        };
+
+        let host_memory_properties = self.get_host_memory_properties(ptr)?;
+        let mut import_memory_info = vk::ImportMemoryHostPointerInfoEXT::default()
+            .handle_type(vk::ExternalMemoryHandleTypeFlags::HOST_ALLOCATION_EXT)
+            .host_pointer(ptr.cast());
+        let memory_type_index = find_memory_type_index(
+            &self.memory_properties,
+            host_memory_properties.memory_type_bits,
+            vk::MemoryPropertyFlags::HOST_VISIBLE,
+        )
+        .context("Failed to find suitable memory index for host memory")?;
+        let mut alloc_flag =
+            vk::MemoryAllocateFlagsInfo::default().flags(vk::MemoryAllocateFlags::DEVICE_ADDRESS);
+        let memory = unsafe {
+            self.allocate_memory(
+                &vk::MemoryAllocateInfo::default()
+                    .allocation_size(min_alignment)
+                    .memory_type_index(memory_type_index)
+                    .push_next(&mut import_memory_info)
+                    .push_next(&mut alloc_flag),
+                None,
+            )?
+        };
+
+        let mut host_buffer_create_info = vk::ExternalMemoryBufferCreateInfo::default()
+            .handle_types(vk::ExternalMemoryHandleTypeFlags::HOST_ALLOCATION_EXT);
+        let buffer = unsafe {
+            self.device.create_buffer(
+                &vk::BufferCreateInfo::default()
+                    .size(min_alignment)
+                    .usage(
+                        vk::BufferUsageFlags::STORAGE_BUFFER
+                            | vk::BufferUsageFlags::TRANSFER_DST
+                            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                    )
+                    .push_next(&mut host_buffer_create_info),
+                None,
+            )?
+        };
+        unsafe { self.bind_buffer_memory(buffer, memory, 0) }?;
+        let address = unsafe {
+            self.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer))
+        };
+        let ptr = unsafe { Box::from_raw(ptr.cast()) };
+        Ok(HostBuffer {
+            address,
+            buffer,
+            memory,
+            ptr,
+            device: self.device.clone(),
+        })
+    }
+
+    pub fn create_render_shader<P: ?Sized + AsRef<std::path::Path>>(
         &self,
         compiler: &mut shaderc::Compiler,
         vs_glsl_path: &P,
@@ -228,11 +330,11 @@ impl Device {
 
             Err((ret, err)) => {
                 if ret[0].is_null() {
-                    panic!("\n vertex shader failed to compile\n{err}\n")
+                    panic!("Failed to compile vertex shader: {err}")
                 } else if ret[1].is_null() {
-                    panic!("\n fragment shader failed to compile\n{err}\n")
+                    panic!("Failed to compile fragment shader: {err}")
                 } else {
-                    panic!("\n shader compilation failed\n{err}\n")
+                    panic!("Shader compilation failed: {err}")
                 }
             }
         }
@@ -249,26 +351,56 @@ impl Drop for Device {
 
 pub fn find_memory_type_index(
     memory_prop: &vk::PhysicalDeviceMemoryProperties,
-    memory_req: &vk::MemoryRequirements,
+    memory_type_bits: u32,
     flags: vk::MemoryPropertyFlags,
 ) -> Option<u32> {
     memory_prop.memory_types[..memory_prop.memory_type_count as _]
         .iter()
         .enumerate()
         .find(|(index, memory_type)| {
-            (1 << index) & memory_req.memory_type_bits != 0
-                && (memory_type.property_flags & flags) == flags
+            (1 << index) & memory_type_bits != 0 && (memory_type.property_flags & flags) == flags
         })
         .map(|(index, _memory_type)| index as _)
 }
 
 pub struct Buffer {
+    pub address: u64,
     pub buffer: vk::Buffer,
     pub memory: vk::DeviceMemory,
     device: Arc<ash::Device>,
 }
 
 impl Drop for Buffer {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.destroy_buffer(self.buffer, None);
+            self.device.free_memory(self.memory, None);
+        }
+    }
+}
+
+pub struct HostBuffer<T: Sized> {
+    pub address: u64,
+    pub buffer: vk::Buffer,
+    pub memory: vk::DeviceMemory,
+    pub ptr: Box<T>,
+    device: Arc<ash::Device>,
+}
+
+impl<T> std::ops::Deref for HostBuffer<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        &self.ptr
+    }
+}
+
+impl<T> std::ops::DerefMut for HostBuffer<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.ptr
+    }
+}
+
+impl<T> Drop for HostBuffer<T> {
     fn drop(&mut self) {
         unsafe {
             self.device.destroy_buffer(self.buffer, None);

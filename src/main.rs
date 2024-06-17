@@ -14,7 +14,7 @@ use winit::{
 };
 
 use self::{
-    device::{Buffer, Device},
+    device::{Buffer, Device, HostBuffer},
     instance::Instance,
     surface::Surface,
     swapchain::Swapchain,
@@ -34,6 +34,7 @@ struct AppInit {
 
     time: Instant,
     buffer: Buffer,
+    host_buffer: HostBuffer<[f32; 4]>,
 
     compiler: shaderc::Compiler,
     swapchain: Swapchain,
@@ -45,6 +46,10 @@ struct AppInit {
 impl Drop for AppInit {
     fn drop(&mut self) {
         unsafe {
+            unsafe {
+                self.device
+                    .destroy_pipeline_layout(self.pipeline_layout, None)
+            };
             self.device.ext.shader_object.destroy_shader(self.vs, None);
             self.device.ext.shader_object.destroy_shader(self.fs, None);
         }
@@ -78,7 +83,7 @@ impl AppInit {
                 None,
             )?
         };
-        let (vs, fs) = device.create_graphics_shader(
+        let (vs, fs) = device.create_render_shader(
             &mut compiler,
             "src/trig.vert.glsl",
             "src/trig.frag.glsl",
@@ -93,6 +98,7 @@ impl AppInit {
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             vk::MemoryPropertyFlags::DEVICE_LOCAL | vk::MemoryPropertyFlags::HOST_VISIBLE,
         )?;
+        let host_buffer = device.create_host_buffer()?;
 
         Ok(Self {
             vs,
@@ -102,6 +108,7 @@ impl AppInit {
 
             time: Instant::now(),
 
+            host_buffer,
             buffer,
             pipeline_layout,
 
@@ -138,20 +145,9 @@ impl ApplicationHandler for AppInit {
                 ..
             } => event_loop.exit(),
             WindowEvent::RedrawRequested => {
-                let (vs, fs) = (self.vs, self.fs);
-
-                let size = size_of::<[f32; 4]>();
-                let ptr = unsafe {
-                    self.device
-                        .map_memory(self.buffer.memory, 0, size as _, Default::default())
-                }
-                .expect("Failed to map memory");
-                let slice =
-                    unsafe { std::slice::from_raw_parts_mut(ptr.cast(), size / size_of::<f32>()) };
                 let t = self.time.elapsed().as_secs_f32();
                 let (c, s) = (t.cos(), t.sin());
-                slice.copy_from_slice(&[c, -s, s, c]);
-                unsafe { self.device.unmap_memory(self.buffer.memory) };
+                self.host_buffer.copy_from_slice(&[c, -s, s, c]);
 
                 let mut frame = match self.swapchain.acquire_next_image() {
                     Ok(frame) => frame,
@@ -166,9 +162,12 @@ impl ApplicationHandler for AppInit {
                     self.swapchain.get_current_image_view(),
                     [0., 0.025, 0.025, 1.0],
                 );
-                let address = self.device.get_buffer_address(&self.buffer);
-                frame.push_constant(self.pipeline_layout, &address);
-                frame.bind_vs_fs(vs, fs);
+                frame.push_constant(
+                    self.pipeline_layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    &self.host_buffer.address,
+                );
+                frame.bind_vs_fs(self.vs, self.fs);
 
                 frame.draw(3, 0);
                 frame.end_rendering();
@@ -185,10 +184,6 @@ impl ApplicationHandler for AppInit {
     }
 
     fn exiting(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
-        unsafe {
-            self.device
-                .destroy_pipeline_layout(self.pipeline_layout, None)
-        };
         let _ = unsafe { self.device.device_wait_idle() };
     }
 

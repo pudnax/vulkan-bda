@@ -189,13 +189,17 @@ impl Swapchain {
         let info = surface.info(device);
         let capabilities = info.capabilities;
 
-        self.destroy();
+        for view in self.views.iter() {
+            unsafe { self.device.destroy_image_view(*view, None) };
+        }
+        let old_swapchain = self.inner;
 
         let queue_family_index = [device.queue_family];
         let swapchain_usage = vk::ImageUsageFlags::COLOR_ATTACHMENT;
         self.extent = capabilities.current_extent;
         let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(**surface)
+            .old_swapchain(old_swapchain)
             .image_format(self.format.format)
             .image_usage(swapchain_usage)
             .image_extent(self.extent)
@@ -209,6 +213,8 @@ impl Swapchain {
             .present_mode(vk::PresentModeKHR::FIFO)
             .clipped(true);
         self.inner = unsafe { self.loader.create_swapchain(&swapchain_create_info, None)? };
+
+        unsafe { self.loader.destroy_swapchain(old_swapchain, None) };
 
         self.images = unsafe { self.loader.get_swapchain_images(self.inner)? };
         self.views = self
@@ -371,7 +377,9 @@ impl Drop for Swapchain {
 }
 
 impl FrameGuard {
-    pub fn begin_rendering(&self, view: &vk::ImageView, color: [f32; 4]) {
+    pub fn begin_rendering(&mut self, view: &vk::ImageView, color: [f32; 4]) {
+        self.dyn_state = DynamicStateFlags::empty();
+
         let clear_color = vk::ClearValue {
             color: vk::ClearColorValue { float32: color },
         };
@@ -581,7 +589,6 @@ impl FrameGuard {
         if !has(DynamicStateFlags::COLOR_BLEND_ENABLE) { self.set_color_blend_enable(&[0]); }
         if !has(DynamicStateFlags::COLOR_BLEND_EQUATION) { self.set_color_blend_equation(&[vk::ColorBlendEquationEXT::default()]); }
         if !has(DynamicStateFlags::COLOR_WRITE_MASK) { self.set_color_write_mask(&[vk::ColorComponentFlags::RGBA]); }
-        // TODO: match this with the exact rules when things should be defined
     }
 
     pub fn draw(&mut self, vertex_count: u32, first_vertex: u32) {
@@ -681,21 +688,26 @@ impl FrameGuard {
         };
     }
 
-    pub fn push_constant<T>(&self, pipeline_layout: vk::PipelineLayout, data: &T) {
+    pub fn push_constant<T>(
+        &self,
+        pipeline_layout: vk::PipelineLayout,
+        stages: vk::ShaderStageFlags,
+        data: &T,
+    ) {
         let ptr = core::ptr::from_ref(data);
         let bytes = unsafe { core::slice::from_raw_parts(ptr.cast(), size_of::<T>()) };
         unsafe {
             self.device.cmd_push_constants(
                 self.frame.command_buffer,
                 pipeline_layout,
-                vk::ShaderStageFlags::VERTEX,
+                stages,
                 0,
                 bytes,
             )
         };
     }
 
-    pub fn end_rendering(&self) {
+    pub fn end_rendering(&mut self) {
         unsafe {
             self.ext
                 .dynamic_rendering
