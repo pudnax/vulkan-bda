@@ -139,14 +139,11 @@ impl Device {
     fn get_host_memory_properties(
         &self,
         ptr: *mut u8,
-    ) -> Result<vk::MemoryHostPointerPropertiesEXT> {
+    ) -> VkResult<vk::MemoryHostPointerPropertiesEXT> {
         let mut mem_properties = vk::MemoryHostPointerPropertiesEXT::default();
+        let fp = self.ext.host_memory.fp();
         let result = unsafe {
-            (self
-                .ext
-                .host_memory
-                .fp()
-                .get_memory_host_pointer_properties_ext)(
+            (fp.get_memory_host_pointer_properties_ext)(
                 self.ext.host_memory.device(),
                 vk::ExternalMemoryHandleTypeFlags::HOST_ALLOCATION_EXT,
                 ptr.cast(),
@@ -155,7 +152,7 @@ impl Device {
         };
         match result {
             vk::Result::SUCCESS => Ok(mem_properties),
-            _ => Err(vk::Result::ERROR_VALIDATION_FAILED_EXT.into()),
+            _ => Err(result),
         }
     }
 
@@ -207,12 +204,13 @@ impl Device {
         })
     }
 
-    pub fn create_host_buffer<T>(&self) -> Result<HostBuffer<T>> {
-        let min_alignment = self.ext.min_host_pointer_alignment;
+    pub fn create_host_buffer<T>(&self, usage: vk::BufferUsageFlags) -> Result<HostBuffer<T>> {
+        let size = size_of::<T>() as u64;
+        let alignment = align_to(size, self.ext.min_host_pointer_alignment);
         let ptr = unsafe {
             NonNull::new(alloc::alloc(alloc::Layout::from_size_align(
-                min_alignment as usize,
-                min_alignment as usize,
+                size as usize,
+                alignment as usize,
             )?))
             .context("Failed to allocate pointer for host memory")?
             .as_ptr()
@@ -233,7 +231,7 @@ impl Device {
         let memory = unsafe {
             self.allocate_memory(
                 &vk::MemoryAllocateInfo::default()
-                    .allocation_size(min_alignment)
+                    .allocation_size(alignment)
                     .memory_type_index(memory_type_index)
                     .push_next(&mut import_memory_info)
                     .push_next(&mut alloc_flag),
@@ -246,12 +244,8 @@ impl Device {
         let buffer = unsafe {
             self.device.create_buffer(
                 &vk::BufferCreateInfo::default()
-                    .size(min_alignment)
-                    .usage(
-                        vk::BufferUsageFlags::STORAGE_BUFFER
-                            | vk::BufferUsageFlags::TRANSFER_DST
-                            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-                    )
+                    .size(size_of::<T>() as _)
+                    .usage(usage | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS)
                     .push_next(&mut host_buffer_create_info),
                 None,
             )?

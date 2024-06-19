@@ -96,7 +96,7 @@ impl AppInit {
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             vk::MemoryPropertyFlags::DEVICE_LOCAL | vk::MemoryPropertyFlags::HOST_VISIBLE,
         )?;
-        let host_buffer = device.create_host_buffer()?;
+        let host_buffer = device.create_host_buffer(vk::BufferUsageFlags::UNIFORM_BUFFER)?;
 
         Ok(Self {
             vs,
