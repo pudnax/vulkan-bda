@@ -691,10 +691,10 @@ impl FrameGuard {
         &self,
         pipeline_layout: vk::PipelineLayout,
         stages: vk::ShaderStageFlags,
-        data: &T,
+        data: &[T],
     ) {
         let ptr = core::ptr::from_ref(data);
-        let bytes = unsafe { core::slice::from_raw_parts(ptr.cast(), size_of::<T>()) };
+        let bytes = unsafe { core::slice::from_raw_parts(ptr.cast(), size_of::<T>() * data.len()) };
         unsafe {
             self.device.cmd_push_constants(
                 self.frame.command_buffer,

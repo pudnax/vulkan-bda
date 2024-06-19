@@ -148,6 +148,7 @@ impl ApplicationHandler for AppInit {
                     }
                     Err(e) => panic!("error: {e}\n"),
                 };
+
                 frame.begin_rendering(
                     self.swapchain.get_current_image_view(),
                     [0., 0.025, 0.025, 1.0],
@@ -155,12 +156,13 @@ impl ApplicationHandler for AppInit {
                 frame.push_constant(
                     self.pipeline_layout,
                     vk::ShaderStageFlags::VERTEX,
-                    &self.host_buffer.address,
+                    &[self.host_buffer.address],
                 );
                 frame.bind_vs_fs(self.vs, self.fs);
 
                 frame.draw(3, 0);
                 frame.end_rendering();
+
                 match self.swapchain.submit_image(&self.queue, frame) {
                     Ok(_) => {}
                     Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => self.recreate_swapchain(),

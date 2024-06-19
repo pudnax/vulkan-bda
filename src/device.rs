@@ -121,6 +121,7 @@ impl Device {
         let mut props2 =
             vk::PhysicalDeviceProperties2::default().push_next(&mut host_memory_properties);
         unsafe { instance.get_physical_device_properties2(pdevice, &mut props2) };
+
         let host_memory = ash::ext::external_memory_host::Device::new(instance, &device);
         let shader_object = ash::ext::shader_object::Device::new(instance, &device);
         let dynamic_rendering = khr::dynamic_rendering::Device::new(instance, &device);
@@ -189,6 +190,7 @@ impl Device {
             memory_prop_flags,
         )
         .expect("Failed to find suitable memory index for buffer memory");
+
         let mut alloc_flag =
             vk::MemoryAllocateFlagsInfo::default().flags(vk::MemoryAllocateFlags::DEVICE_ADDRESS);
         let alloc_info = vk::MemoryAllocateInfo::default()
@@ -197,9 +199,11 @@ impl Device {
             .push_next(&mut alloc_flag);
         let memory = unsafe { self.device.allocate_memory(&alloc_info, None) }?;
         unsafe { self.bind_buffer_memory(buffer, memory, 0) }?;
+
         let address = unsafe {
             self.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer))
         };
+
         Ok(Buffer {
             address,
             buffer,
@@ -208,6 +212,10 @@ impl Device {
         })
     }
 
+    // WARN: It's not optimal to bind one memory allocation per buffer with VK_EXT_external_memory_host.
+    // The most common pointer alignment is 4096 bytes and ideally you need to share this memory
+    // between several buffers or use to bypass staging buffer and additional copies (e.g. asset
+    // loading)
     pub fn create_host_buffer<T>(&self, usage: vk::BufferUsageFlags) -> Result<HostBuffer<T>> {
         let size = size_of::<T>() as u64;
         let alignment = align_to(size, self.ext.min_host_pointer_alignment);
@@ -259,6 +267,7 @@ impl Device {
             self.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer))
         };
         let ptr = unsafe { Box::from_raw(ptr.cast()) };
+
         Ok(HostBuffer {
             address,
             buffer,
