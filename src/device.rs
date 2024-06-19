@@ -1,3 +1,4 @@
+use core::slice;
 use std::{alloc, collections::HashSet, ptr::NonNull, sync::Arc};
 
 use crate::{instance::Instance, surface::Surface};
@@ -18,9 +19,11 @@ pub struct Device {
 }
 
 pub struct DeviceExt {
+    pub descriptor_buffer: ext::descriptor_buffer::Device,
     pub dynamic_rendering: khr::dynamic_rendering::Device,
     pub shader_object: ext::shader_object::Device,
     pub host_memory: ext::external_memory_host::Device,
+    pub desc_buffer_properties: vk::PhysicalDeviceDescriptorBufferPropertiesEXT<'static>,
     min_host_pointer_alignment: u64,
 }
 
@@ -45,6 +48,7 @@ impl Device {
             khr::synchronization2::NAME,
             khr::buffer_device_address::NAME,
             ext::external_memory_host::NAME,
+            ext::descriptor_buffer::NAME,
         ];
         let required_device_extensions_set = HashSet::from(required_device_extensions);
 
@@ -92,6 +96,8 @@ impl Device {
 
         let required_device_extensions = required_device_extensions.map(|x| x.as_ptr());
 
+        let mut feature_descriptor_buffer =
+            vk::PhysicalDeviceDescriptorBufferFeaturesEXT::default().descriptor_buffer(true);
         let mut feature_buffer_device_address =
             vk::PhysicalDeviceBufferDeviceAddressFeatures::default().buffer_device_address(true);
         let mut feature_synchronization2 =
@@ -105,6 +111,7 @@ impl Device {
             .enabled_features(&default_features)
             .queue_create_infos(&queue_infos)
             .enabled_extension_names(&required_device_extensions)
+            .push_next(&mut feature_descriptor_buffer)
             .push_next(&mut feature_buffer_device_address)
             .push_next(&mut feature_synchronization2)
             .push_next(&mut feature_shader_object)
@@ -114,12 +121,89 @@ impl Device {
         let memory_properties = unsafe { instance.get_physical_device_memory_properties(pdevice) };
         let mut host_memory_properties =
             vk::PhysicalDeviceExternalMemoryHostPropertiesEXT::default();
-        let mut props2 =
-            vk::PhysicalDeviceProperties2::default().push_next(&mut host_memory_properties);
+        let mut descriptor_buffer_properties =
+            vk::PhysicalDeviceDescriptorBufferPropertiesEXT::default();
+        let mut props2 = vk::PhysicalDeviceProperties2::default()
+            .push_next(&mut host_memory_properties)
+            .push_next(&mut descriptor_buffer_properties);
         unsafe { instance.get_physical_device_properties2(pdevice, &mut props2) };
-        let host_memory = ash::ext::external_memory_host::Device::new(instance, &device);
-        let shader_object = ash::ext::shader_object::Device::new(instance, &device);
+
+        let descriptor_buffer = ext::descriptor_buffer::Device::new(instance, &device);
+        let host_memory = ext::external_memory_host::Device::new(instance, &device);
+        let shader_object = ext::shader_object::Device::new(instance, &device);
         let dynamic_rendering = khr::dynamic_rendering::Device::new(instance, &device);
+
+        let uniform_binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER);
+        let descriptor_set_layout_create_info = vk::DescriptorSetLayoutCreateInfo::default()
+            .flags(vk::DescriptorSetLayoutCreateFlags::DESCRIPTOR_BUFFER_EXT)
+            .bindings(slice::from_ref(&uniform_binding));
+        let uniform_desc_layout = unsafe {
+            device.create_descriptor_set_layout(&descriptor_set_layout_create_info, None)?
+        };
+        let layout_size =
+            unsafe { descriptor_buffer.get_descriptor_set_layout_size(uniform_desc_layout) };
+        let layout_offset = unsafe {
+            descriptor_buffer.get_descriptor_set_layout_binding_offset(uniform_desc_layout, 0)
+        };
+
+        let layout_size = align_to(
+            layout_size,
+            descriptor_buffer_properties.descriptor_buffer_offset_alignment,
+        );
+
+        let desc_set_buffer = unsafe {
+            device.create_buffer(
+                &vk::BufferCreateInfo::default()
+                    .usage(
+                        vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                            | vk::BufferUsageFlags::RESOURCE_DESCRIPTOR_BUFFER_EXT,
+                    )
+                    .size(layout_size),
+                None,
+            )?
+        };
+
+        let requirements = unsafe { device.get_buffer_memory_requirements(desc_set_buffer) };
+        let memory_type_index = find_memory_type_index(
+            &memory_properties,
+            requirements.memory_type_bits,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )
+        .expect("Failed to find suitable memory index for buffer memory");
+        let mut alloc_flag =
+            vk::MemoryAllocateFlagsInfo::default().flags(vk::MemoryAllocateFlags::DEVICE_ADDRESS);
+        let alloc_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(requirements.size)
+            .memory_type_index(memory_type_index)
+            .push_next(&mut alloc_flag);
+        let memory = unsafe { device.allocate_memory(&alloc_info, None) }?;
+        unsafe { device.bind_buffer_memory(desc_set_buffer, memory, 0) }?;
+        let address = unsafe {
+            device.get_buffer_device_address(
+                &vk::BufferDeviceAddressInfo::default().buffer(desc_set_buffer),
+            )
+        };
+
+        let desc_address_info = vk::DescriptorAddressInfoEXT::default()
+            .format(vk::Format::UNDEFINED)
+            .address(address)
+            .range(size_of::<[[f32; 3]; 3]>() as _);
+        let desc_data = vk::DescriptorDataEXT {
+            p_uniform_buffer: &desc_address_info,
+        };
+        let mut x = [0; 8];
+        unsafe {
+            descriptor_buffer.get_descriptor(
+                &vk::DescriptorGetInfoEXT::default()
+                    .ty(vk::DescriptorType::UNIFORM_BUFFER)
+                    .data(desc_data),
+                &mut x,
+            )
+        };
 
         Ok(Self {
             physical_device: pdevice,
@@ -128,8 +212,10 @@ impl Device {
             device: Arc::new(device),
             ext: Arc::new(DeviceExt {
                 dynamic_rendering,
+                descriptor_buffer,
                 shader_object,
                 host_memory,
+                desc_buffer_properties: descriptor_buffer_properties,
                 min_host_pointer_alignment: host_memory_properties
                     .min_imported_host_pointer_alignment,
             }),
@@ -341,6 +427,10 @@ impl Drop for Device {
             self.device.destroy_device(None);
         }
     }
+}
+
+pub fn align_to(size: u64, alignment: u64) -> u64 {
+    (size + alignment - 1) & !(alignment - 1)
 }
 
 pub fn find_memory_type_index(

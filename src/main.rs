@@ -1,11 +1,8 @@
 use core::slice;
-use std::time::Instant;
+use std::{f32::consts::TAU, time::Instant};
 
 use anyhow::{Context, Result};
-use ash::{
-    khr,
-    vk::{self},
-};
+use ash::{khr, vk};
 use winit::{
     application::ApplicationHandler,
     event::{KeyEvent, WindowEvent},
@@ -14,7 +11,7 @@ use winit::{
 };
 
 use self::{
-    device::{Buffer, Device, HostBuffer},
+    device::{align_to, Buffer, Device, HostBuffer},
     instance::Instance,
     surface::Surface,
     swapchain::Swapchain,
@@ -33,8 +30,9 @@ struct AppInit {
     queue: vk::Queue,
 
     time: Instant,
-    buffer: Buffer,
-    host_buffer: HostBuffer<[f32; 4]>,
+    pc_host_buffer: HostBuffer<[f32; 4]>,
+    un_host_buffer: HostBuffer<[[f32; 4]; 3]>,
+    un_desc_buffer: Buffer,
 
     compiler: shaderc::Compiler,
     swapchain: Swapchain,
@@ -71,12 +69,80 @@ impl AppInit {
 
         let mut compiler = shaderc::Compiler::new().context("Failed to create shader compiler")?;
 
+        let pc_host_buffer = device.create_host_buffer(vk::BufferUsageFlags::UNIFORM_BUFFER)?;
+        let mut un_host_buffer = device.create_host_buffer(vk::BufferUsageFlags::UNIFORM_BUFFER)?;
+
+        let uniform_binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER);
+        let uniform_desc_layout = unsafe {
+            device.create_descriptor_set_layout(
+                &vk::DescriptorSetLayoutCreateInfo::default()
+                    .flags(vk::DescriptorSetLayoutCreateFlags::DESCRIPTOR_BUFFER_EXT)
+                    .bindings(slice::from_ref(&uniform_binding)),
+                None,
+            )?
+        };
+        let buffer_offset_alignment = device
+            .ext
+            .desc_buffer_properties
+            .descriptor_buffer_offset_alignment;
+        let layout_size = unsafe {
+            let size = device
+                .ext
+                .descriptor_buffer
+                .get_descriptor_set_layout_size(uniform_desc_layout);
+            align_to(size, buffer_offset_alignment)
+        };
+        let layout_offset = unsafe {
+            device
+                .ext
+                .descriptor_buffer
+                .get_descriptor_set_layout_binding_offset(uniform_desc_layout, 0)
+                as usize
+        };
+
+        let un_desc_buffer = device.create_buffer(
+            layout_size,
+            vk::BufferUsageFlags::RESOURCE_DESCRIPTOR_BUFFER_EXT,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )?;
+
+        let desc_address_info = vk::DescriptorAddressInfoEXT::default()
+            .format(vk::Format::UNDEFINED)
+            .address(un_desc_buffer.address)
+            .range(size_of::<[[f32; 4]; 3]>() as _);
+        let desc_data = vk::DescriptorDataEXT {
+            p_uniform_buffer: &desc_address_info,
+        };
+        let un_buffer_size = device
+            .ext
+            .desc_buffer_properties
+            .uniform_buffer_descriptor_size;
+
+        println!("Origignal: {:p}", un_host_buffer.ptr);
+        let buffer_ptr = bytemuck::bytes_of_mut(&mut *un_host_buffer.ptr);
+        println!("Before: {:p}", buffer_ptr);
+        let x = &mut buffer_ptr[layout_offset..][..un_buffer_size];
+        println!("After: {:p}", x);
+        unsafe {
+            device.ext.descriptor_buffer.get_descriptor(
+                &vk::DescriptorGetInfoEXT::default()
+                    .ty(vk::DescriptorType::UNIFORM_BUFFER)
+                    .data(desc_data),
+                x,
+            )
+        };
+
         let push_constant_range = vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX)
             .size(size_of::<u64>() as _);
         let pipeline_layout = unsafe {
             device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
+                    .set_layouts(slice::from_ref(&uniform_desc_layout))
                     .push_constant_ranges(slice::from_ref(&push_constant_range)),
                 None,
             )?
@@ -86,17 +152,8 @@ impl AppInit {
             "src/trig.vert.glsl",
             "src/trig.frag.glsl",
             &[push_constant_range],
-            &[],
+            &[uniform_desc_layout],
         )?;
-
-        let buffer = device.create_buffer(
-            size_of::<[f32; 4]>() as _,
-            vk::BufferUsageFlags::STORAGE_BUFFER
-                | vk::BufferUsageFlags::TRANSFER_DST
-                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL | vk::MemoryPropertyFlags::HOST_VISIBLE,
-        )?;
-        let host_buffer = device.create_host_buffer(vk::BufferUsageFlags::UNIFORM_BUFFER)?;
 
         Ok(Self {
             vs,
@@ -106,9 +163,10 @@ impl AppInit {
 
             time: Instant::now(),
 
-            host_buffer,
-            buffer,
+            pc_host_buffer,
+            un_host_buffer,
             pipeline_layout,
+            un_desc_buffer,
 
             compiler,
             swapchain,
@@ -145,7 +203,18 @@ impl ApplicationHandler for AppInit {
             WindowEvent::RedrawRequested => {
                 let t = self.time.elapsed().as_secs_f32();
                 let (c, s) = (t.cos(), t.sin());
-                self.host_buffer.copy_from_slice(&[c, -s, s, c]);
+                self.pc_host_buffer.copy_from_slice(&[c, -s, s, c]);
+
+                let cos_palette = |t: f32| {
+                    let a = [0.5, 0.5, 0.5, 0.];
+                    let b = [0.5, 0.5, 0.5, 0.];
+                    let c = [1., 1., 0.5, 0.];
+                    let d = [0.8, 0.9, 0.3, 0.];
+                    std::array::from_fn(|i| a[i] + b[i] * f32::cos(TAU * (c[i] * t + d[i])))
+                };
+                for (i, col) in self.un_host_buffer.iter_mut().enumerate() {
+                    *col = cos_palette(t + 0.2 * i as f32)
+                }
 
                 let mut frame = match self.swapchain.acquire_next_image() {
                     Ok(frame) => frame,
@@ -160,10 +229,31 @@ impl ApplicationHandler for AppInit {
                     self.swapchain.get_current_image_view(),
                     [0., 0.025, 0.025, 1.0],
                 );
+                unsafe {
+                    frame.ext.descriptor_buffer.cmd_bind_descriptor_buffers(
+                        frame.frame.command_buffer,
+                        &[vk::DescriptorBufferBindingInfoEXT::default()
+                            .usage(vk::BufferUsageFlags::RESOURCE_DESCRIPTOR_BUFFER_EXT)
+                            .address(self.un_desc_buffer.address)],
+                    )
+                };
+                unsafe {
+                    frame
+                        .ext
+                        .descriptor_buffer
+                        .cmd_set_descriptor_buffer_offsets(
+                            frame.frame.command_buffer,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            self.pipeline_layout,
+                            0,
+                            &[0],
+                            &[0],
+                        )
+                };
                 frame.push_constant(
                     self.pipeline_layout,
                     vk::ShaderStageFlags::VERTEX,
-                    &self.host_buffer.address,
+                    &self.pc_host_buffer.address,
                 );
                 frame.bind_vs_fs(self.vs, self.fs);
 
