@@ -9,6 +9,10 @@ use ash::{
     vk::{self, Handle},
 };
 
+pub fn align_to(size: u64, alignment: u64) -> u64 {
+    (size + alignment - 1) & !(alignment - 1)
+}
+
 pub struct Device {
     pub physical_device: vk::PhysicalDevice,
     pub memory_properties: vk::PhysicalDeviceMemoryProperties,

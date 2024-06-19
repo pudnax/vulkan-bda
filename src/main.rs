@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use core::slice;
 use std::time::Instant;
 
@@ -14,7 +15,7 @@ use winit::{
 };
 
 use self::{
-    device::{Buffer, Device, HostBuffer},
+    device::{Device, HostBuffer},
     instance::Instance,
     surface::Surface,
     swapchain::Swapchain,
@@ -33,7 +34,6 @@ struct AppInit {
     queue: vk::Queue,
 
     time: Instant,
-    buffer: Buffer,
     host_buffer: HostBuffer<[f32; 4]>,
 
     compiler: shaderc::Compiler,
@@ -89,13 +89,6 @@ impl AppInit {
             &[],
         )?;
 
-        let buffer = device.create_buffer(
-            size_of::<[f32; 4]>() as _,
-            vk::BufferUsageFlags::STORAGE_BUFFER
-                | vk::BufferUsageFlags::TRANSFER_DST
-                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL | vk::MemoryPropertyFlags::HOST_VISIBLE,
-        )?;
         let host_buffer = device.create_host_buffer(vk::BufferUsageFlags::UNIFORM_BUFFER)?;
 
         Ok(Self {
@@ -107,7 +100,6 @@ impl AppInit {
             time: Instant::now(),
 
             host_buffer,
-            buffer,
             pipeline_layout,
 
             compiler,
