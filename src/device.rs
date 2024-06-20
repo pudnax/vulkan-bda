@@ -118,7 +118,31 @@ impl Device {
             .push_next(&mut feature_dynamic_rendering);
         let device = unsafe { instance.instance.create_device(pdevice, &device_info, None) }?;
 
+        fn fmt_size(n: u64) -> String {
+            if n < 1_000_000 {
+                format!("{:>3} B", n)
+            } else if n < 1_000_000 {
+                format!("{:>3} kB", n >> 10)
+            } else if n < 1_000_000_000 {
+                format!("{:>3} MB", n >> 20)
+            } else {
+                format!("{:>3} GB", n >> 30)
+            }
+        }
         let memory_properties = unsafe { instance.get_physical_device_memory_properties(pdevice) };
+
+        for mp in &memory_properties.memory_types[..memory_properties.memory_type_count as _] {
+            if !mp.property_flags.is_empty() {
+                println!("Memory: {:?}", mp.property_flags);
+                let heap = memory_properties.memory_heaps[mp.heap_index as usize];
+                println!(
+                    "\tMemory Heap {}: Size {:?} | Type {:?}",
+                    mp.heap_index,
+                    fmt_size(heap.size),
+                    heap.flags
+                )
+            }
+        }
         let mut host_memory_properties =
             vk::PhysicalDeviceExternalMemoryHostPropertiesEXT::default();
         let mut descriptor_buffer_properties =
@@ -292,7 +316,7 @@ impl Device {
 
     pub fn create_host_buffer<T>(&self, usage: vk::BufferUsageFlags) -> Result<HostBuffer<T>> {
         let size = size_of::<T>() as u64;
-        let alignment = align_to(size, self.ext.min_host_pointer_alignment);
+        let alignment = self.ext.min_host_pointer_alignment;
         let ptr = unsafe {
             NonNull::new(alloc::alloc(alloc::Layout::from_size_align(
                 size as usize,
@@ -301,11 +325,14 @@ impl Device {
             .context("Failed to allocate pointer for host memory")?
             .as_ptr()
         };
+        let ptr_aligned = ((ptr as usize) & !(alignment as usize - 1)) as *mut u8;
+        let data_offset = ptr as usize & (alignment as usize - 1);
+        let data_size = align_to(size + data_offset as u64, alignment);
 
         let host_memory_properties = self.get_host_memory_properties(ptr)?;
         let mut import_memory_info = vk::ImportMemoryHostPointerInfoEXT::default()
             .handle_type(vk::ExternalMemoryHandleTypeFlags::HOST_ALLOCATION_EXT)
-            .host_pointer(ptr.cast());
+            .host_pointer(ptr_aligned.cast());
         let memory_type_index = find_memory_type_index(
             &self.memory_properties,
             host_memory_properties.memory_type_bits,
@@ -317,7 +344,7 @@ impl Device {
         let memory = unsafe {
             self.allocate_memory(
                 &vk::MemoryAllocateInfo::default()
-                    .allocation_size(alignment)
+                    .allocation_size(data_size)
                     .memory_type_index(memory_type_index)
                     .push_next(&mut import_memory_info)
                     .push_next(&mut alloc_flag),
@@ -340,7 +367,7 @@ impl Device {
         let address = unsafe {
             self.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer))
         };
-        let ptr = unsafe { Box::from_raw(ptr.cast()) };
+        let ptr = unsafe { Box::from_raw(ptr.byte_add(data_offset).cast()) };
         Ok(HostBuffer {
             address,
             buffer,
@@ -463,7 +490,7 @@ impl Drop for Buffer {
     }
 }
 
-pub struct HostBuffer<T: Sized> {
+pub struct HostBuffer<T> {
     pub address: u64,
     pub buffer: vk::Buffer,
     pub memory: vk::DeviceMemory,

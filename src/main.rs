@@ -32,7 +32,9 @@ struct AppInit {
     time: Instant,
     pc_host_buffer: HostBuffer<[f32; 4]>,
     un_host_buffer: HostBuffer<[[f32; 4]; 3]>,
+    // un_host_buffer: Buffer,
     un_desc_buffer: Buffer,
+    mapped: *mut u8,
 
     compiler: shaderc::Compiler,
     swapchain: Swapchain,
@@ -71,6 +73,11 @@ impl AppInit {
 
         let pc_host_buffer = device.create_host_buffer(vk::BufferUsageFlags::UNIFORM_BUFFER)?;
         let mut un_host_buffer = device.create_host_buffer(vk::BufferUsageFlags::UNIFORM_BUFFER)?;
+        // let un_host_buffer = device.create_buffer(
+        //     size_of::<[[f32; 3]; 3]>() as _,
+        //     vk::BufferUsageFlags::UNIFORM_BUFFER,
+        //     vk::MemoryPropertyFlags::HOST_VISIBLE,
+        // )?;
 
         let uniform_binding = vk::DescriptorSetLayoutBinding::default()
             .binding(0)
@@ -103,6 +110,8 @@ impl AppInit {
                 .get_descriptor_set_layout_binding_offset(uniform_desc_layout, 0)
                 as usize
         };
+        dbg!(&layout_offset);
+        dbg!(&layout_size);
 
         let un_desc_buffer = device.create_buffer(
             layout_size,
@@ -110,9 +119,18 @@ impl AppInit {
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         )?;
 
+        let mapped = unsafe {
+            device.map_memory(
+                un_desc_buffer.memory,
+                0,
+                layout_size,
+                vk::MemoryMapFlags::empty(),
+            )?
+        };
+
         let desc_address_info = vk::DescriptorAddressInfoEXT::default()
-            .format(vk::Format::UNDEFINED)
-            .address(un_desc_buffer.address)
+            // .format(vk::Format::UNDEFINED)
+            .address(un_host_buffer.address)
             .range(size_of::<[[f32; 4]; 3]>() as _);
         let desc_data = vk::DescriptorDataEXT {
             p_uniform_buffer: &desc_address_info,
@@ -121,12 +139,15 @@ impl AppInit {
             .ext
             .desc_buffer_properties
             .uniform_buffer_descriptor_size;
+        dbg!(&un_buffer_size);
 
-        println!("Origignal: {:p}", un_host_buffer.ptr);
-        let buffer_ptr = bytemuck::bytes_of_mut(&mut *un_host_buffer.ptr);
-        println!("Before: {:p}", buffer_ptr);
-        let x = &mut buffer_ptr[layout_offset..][..un_buffer_size];
-        println!("After: {:p}", x);
+        // println!("Origignal:\t{:p}", un_host_buffer.ptr);
+        // let buffer_ptr = bytemuck::bytes_of_mut(&mut *un_host_buffer.ptr);
+        // println!("Before:\t{:p}", buffer_ptr);
+        // let x = &mut buffer_ptr[layout_offset..][..un_buffer_size];
+        // println!("After:\t{:p}", x);
+        let x = unsafe { std::slice::from_raw_parts_mut(mapped.cast(), layout_size as usize) };
+        let x = &mut x[layout_offset..][..un_buffer_size];
         unsafe {
             device.ext.descriptor_buffer.get_descriptor(
                 &vk::DescriptorGetInfoEXT::default()
@@ -167,6 +188,7 @@ impl AppInit {
             un_host_buffer,
             pipeline_layout,
             un_desc_buffer,
+            mapped: mapped.cast(),
 
             compiler,
             swapchain,
