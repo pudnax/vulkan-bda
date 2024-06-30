@@ -11,8 +11,10 @@ use crate::{
     surface::Surface,
 };
 
+// TODO: remove pubs!
+
 pub struct Frame {
-    command_buffer: vk::CommandBuffer,
+    pub command_buffer: vk::CommandBuffer,
     image_available_semaphore: vk::Semaphore,
     render_finished_semaphore: vk::Semaphore,
     present_finished: vk::Fence,
@@ -61,12 +63,12 @@ impl Frame {
 }
 
 pub struct FrameGuard {
-    frame: Frame,
+    pub frame: Frame,
     dyn_state: DynamicStateFlags,
     extent: vk::Extent2D,
     image_idx: usize,
     device: Arc<ash::Device>,
-    ext: Arc<DeviceExt>,
+    pub ext: Arc<DeviceExt>,
 }
 
 pub struct Swapchain {

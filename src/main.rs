@@ -3,10 +3,7 @@ use core::slice;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use ash::{
-    khr,
-    vk::{self},
-};
+use ash::{khr, vk};
 use winit::{
     application::ApplicationHandler,
     event::{KeyEvent, WindowEvent},
