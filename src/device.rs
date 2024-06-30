@@ -42,13 +42,11 @@ impl Device {
             // these are all required for shader_object
             ext::shader_object::NAME,
             khr::dynamic_rendering::NAME,
-            khr::depth_stencil_resolve::NAME,
-            khr::create_renderpass2::NAME,
-            khr::multiview::NAME,
             khr::synchronization2::NAME,
             khr::buffer_device_address::NAME,
-            ext::external_memory_host::NAME,
-            ext::descriptor_buffer::NAME,
+            ext::descriptor_indexing::NAME,
+            ext::external_memory_host::NAME, // no renderdoc
+            ext::descriptor_buffer::NAME,    // no renderdoc
         ];
         let required_device_extensions_set = HashSet::from(required_device_extensions);
 
@@ -96,6 +94,13 @@ impl Device {
 
         let required_device_extensions = required_device_extensions.map(|x| x.as_ptr());
 
+        let mut feature_descriptor_indexing =
+            vk::PhysicalDeviceDescriptorIndexingFeatures::default()
+                .runtime_descriptor_array(true)
+                .descriptor_binding_variable_descriptor_count(true)
+                .descriptor_binding_partially_bound(true)
+                .descriptor_binding_update_unused_while_pending(true)
+                .descriptor_binding_sampled_image_update_after_bind(true);
         let mut feature_descriptor_buffer =
             vk::PhysicalDeviceDescriptorBufferFeaturesEXT::default().descriptor_buffer(true);
         let mut feature_buffer_device_address =
@@ -111,6 +116,7 @@ impl Device {
             .enabled_features(&default_features)
             .queue_create_infos(&queue_infos)
             .enabled_extension_names(&required_device_extensions)
+            .push_next(&mut feature_descriptor_indexing)
             .push_next(&mut feature_descriptor_buffer)
             .push_next(&mut feature_buffer_device_address)
             .push_next(&mut feature_synchronization2)
