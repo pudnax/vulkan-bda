@@ -47,6 +47,7 @@ impl Device {
             khr::dynamic_rendering::NAME,
             khr::synchronization2::NAME,
             khr::buffer_device_address::NAME,
+            khr::create_renderpass2::NAME,
             ext::descriptor_indexing::NAME,
             ext::external_memory_host::NAME, // no renderdoc support
             ext::descriptor_buffer::NAME,    // no renderdoc support
@@ -114,21 +115,22 @@ impl Device {
             vk::PhysicalDeviceShaderObjectFeaturesEXT::default().shader_object(true);
         let mut feature_dynamic_rendering =
             vk::PhysicalDeviceDynamicRenderingFeatures::default().dynamic_rendering(true);
-        let default_features = vk::PhysicalDeviceFeatures::default();
-        let device_info = vk::DeviceCreateInfo::default()
-            .enabled_features(&default_features)
-            .queue_create_infos(&queue_infos)
-            .enabled_extension_names(&required_device_extensions)
+        let mut default_features = vk::PhysicalDeviceFeatures2::default()
             .push_next(&mut feature_descriptor_indexing)
             .push_next(&mut feature_descriptor_buffer)
             .push_next(&mut feature_buffer_device_address)
             .push_next(&mut feature_synchronization2)
             .push_next(&mut feature_shader_object)
             .push_next(&mut feature_dynamic_rendering);
+
+        let device_info = vk::DeviceCreateInfo::default()
+            .queue_create_infos(&queue_infos)
+            .enabled_extension_names(&required_device_extensions)
+            .push_next(&mut default_features);
         let device = unsafe { instance.instance.create_device(pdevice, &device_info, None) }?;
 
         fn fmt_size(n: u64) -> String {
-            if n < 1_000_000 {
+            if n < 1_000 {
                 format!("{:>3} B", n)
             } else if n < 1_000_000 {
                 format!("{:>3} kB", n >> 10)

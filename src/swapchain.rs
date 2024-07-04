@@ -11,10 +11,8 @@ use crate::{
     surface::Surface,
 };
 
-// TODO: remove pubs!
-
 pub struct Frame {
-    pub command_buffer: vk::CommandBuffer,
+    command_buffer: vk::CommandBuffer,
     image_available_semaphore: vk::Semaphore,
     render_finished_semaphore: vk::Semaphore,
     present_finished: vk::Fence,
@@ -695,8 +693,8 @@ impl FrameGuard {
         stages: vk::ShaderStageFlags,
         data: &[T],
     ) {
-        let ptr = core::ptr::from_ref(data);
-        let bytes = unsafe { core::slice::from_raw_parts(ptr.cast(), size_of::<T>() * data.len()) };
+        let ptr = std::ptr::from_ref(data);
+        let bytes = unsafe { std::slice::from_raw_parts(ptr.cast(), std::mem::size_of_val(data)) };
         unsafe {
             self.device.cmd_push_constants(
                 self.frame.command_buffer,
