@@ -210,7 +210,11 @@ impl Swapchain {
 
         let queue_family_index = [device.queue_family];
         let swapchain_usage = vk::ImageUsageFlags::COLOR_ATTACHMENT;
-        self.extent = capabilities.current_extent;
+
+        let extent = capabilities.current_extent;
+        self.extent.width = extent.width.min(capabilities.max_image_extent.width);
+        self.extent.height = extent.height.min(capabilities.max_image_extent.height);
+
         let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(**surface)
             .old_swapchain(old_swapchain)
@@ -223,7 +227,7 @@ impl Swapchain {
             .queue_family_indices(&queue_family_index)
             .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
             .pre_transform(vk::SurfaceTransformFlagsKHR::IDENTITY)
-            .composite_alpha(capabilities.supported_composite_alpha)
+            .composite_alpha(CompositeAlphaFlagsKHR::OPAQUE)
             .present_mode(vk::PresentModeKHR::FIFO)
             .clipped(true);
         self.inner = unsafe { self.loader.create_swapchain(&swapchain_create_info, None)? };
